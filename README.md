@@ -13,7 +13,14 @@
 5. [Non-Functional Requirements](#non-functional-requirements)
 6. [High-Level Architecture](#high-level-architecture)
 7. [Tech Stack](#tech-stack)
-8. [Getting Started](#getting-started)
+8. [Design Deep Dive](#design-deep-dive)
+   - [Balance Snapshot Strategy](#1-balance-snapshot-strategy)
+   - [Transaction Reversal Model](#2-transaction-reversal-model)
+   - [Event Publishing Guarantees](#3-event-publishing-guarantees)
+   - [Security Trust Boundaries](#4-security-trust-boundaries)
+   - [Design Tradeoffs & Rationale](#5-design-tradeoffs--rationale)
+   - [Sequence Diagrams](#6-sequence-diagrams)
+9. [Getting Started](#getting-started)
 
 ---
 
@@ -472,7 +479,570 @@ ledgerx/
 
 ---
 
-## 📄 License
+## � Design Deep Dive
+
+This section provides detailed clarifications on critical design decisions for production deployment.
+
+### 1. Balance Snapshot Strategy
+
+#### Snapshot Frequency
+| Snapshot Type | Frequency | Retention | Use Case |
+|---------------|-----------|-----------|----------|
+| **Hot Snapshots** | Every 1 hour | 7 days | Fast balance recovery, recent queries |
+| **Daily Snapshots** | End of day (UTC) | 2 years | Statements, reconciliation, audits |
+| **Monthly Snapshots** | End of month | 7 years | Regulatory compliance, long-term audits |
+
+#### Snapshot Process
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     BALANCE SNAPSHOT WORKFLOW                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. TRIGGER                    2. COMPUTE                    3. PERSIST     │
+│  ┌──────────────┐             ┌──────────────┐             ┌──────────────┐ │
+│  │ Scheduled    │────────────▶│ SELECT SUM   │────────────▶│ INSERT INTO  │ │
+│  │ Cron Job     │             │ FROM ledger  │             │ snapshots    │ │
+│  │ (K8s CronJob)│             │ WHERE posted │             │              │ │
+│  └──────────────┘             └──────────────┘             └──────────────┘ │
+│         │                            │                            │         │
+│         │                            │                            │         │
+│         ▼                            ▼                            ▼         │
+│  ┌──────────────┐             ┌──────────────┐             ┌──────────────┐ │
+│  │ Acquire      │             │ Compare with │             │ Update       │ │
+│  │ Advisory Lock│             │ Cached Balance│            │ last_entry_id│ │
+│  └──────────────┘             └──────────────┘             └──────────────┘ │
+│                                      │                                      │
+│                                      ▼                                      │
+│                              ┌──────────────┐                               │
+│                              │ Discrepancy? │                               │
+│                              │ Alert + Log  │                               │
+│                              └──────────────┘                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Failure Handling
+| Failure Mode | Detection | Recovery | Impact |
+|--------------|-----------|----------|--------|
+| Snapshot job fails | K8s job monitoring + PagerDuty alert | Auto-retry with exponential backoff (3 attempts) | None - balance still computed from ledger |
+| Snapshot divergence detected | Reconciliation comparison | Trigger full recompute from ledger + alert ops | Snapshot marked invalid, queries fall back to ledger |
+| Database unavailable | Health check failure | Wait for recovery, resume from last `last_entry_id` | Delayed snapshots, no data loss |
+| Partial snapshot (mid-write crash) | `completed_at IS NULL` check | Delete incomplete, re-run | None - atomic transaction ensures consistency |
+
+#### Consistency Guarantees
+```sql
+-- Snapshots are created atomically within a transaction
+BEGIN;
+  -- Lock to prevent concurrent snapshots for same wallet
+  SELECT pg_advisory_xact_lock(hashtext('snapshot:' || wallet_id::text));
+  
+  -- Compute balance at specific entry point
+  INSERT INTO balance_snapshots (wallet_id, snapshot_date, posted_balance, held_balance, last_entry_id, entry_count)
+  SELECT 
+    wallet_id,
+    CURRENT_DATE,
+    SUM(CASE WHEN entry_type = 'CREDIT' THEN amount ELSE -amount END),
+    COALESCE((SELECT SUM(amount) FROM holds WHERE wallet_id = le.wallet_id AND status = 'ACTIVE'), 0),
+    MAX(id),
+    COUNT(*)
+  FROM ledger_entries le
+  WHERE wallet_id = :wallet_id AND status = 'POSTED'
+  GROUP BY wallet_id;
+COMMIT;
+```
+
+**Invariant**: `balance_snapshots.posted_balance + SUM(ledger_entries WHERE id > last_entry_id) == wallet_balances.posted_balance`
+
+---
+
+### 2. Transaction Reversal Model
+
+LedgerX follows the **compensating transaction pattern** - reversals never mutate historical data. Instead, new entries are created that offset the original transaction.
+
+#### Reversal Types
+| Reversal Type | Trigger | Timing | Creates |
+|---------------|---------|--------|---------|
+| **Full Refund** | Customer request, dispute | Any time | Inverse entries for full amount |
+| **Partial Refund** | Merchant-initiated | Any time | Inverse entries for partial amount |
+| **Void** | System/admin action | Within 24 hours | Void entries, marks original as VOIDED |
+| **Chargeback** | Bank/card network | Up to 120 days | Compensating entries + chargeback record |
+| **Correction** | Admin with approval | Any time | Adjustment entries with audit trail |
+
+#### Reversal Entry Structure
+```
+Original Transfer: Alice → Bob ($100)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Transaction #TXN-001 (status: COMPLETED)                                    │
+├─────────────┬─────────┬────────┬────────┬──────────────────────────────────┤
+│ Entry #1    │ Alice   │ DEBIT  │ $100   │ Posted 2024-01-15 10:00:00       │
+│ Entry #2    │ Bob     │ CREDIT │ $100   │ Posted 2024-01-15 10:00:00       │
+└─────────────┴─────────┴────────┴────────┴──────────────────────────────────┘
+
+Reversal: Full Refund
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Transaction #TXN-002 (status: COMPLETED, parent: TXN-001, type: REFUND)     │
+├─────────────┬─────────┬────────┬────────┬──────────────────────────────────┤
+│ Entry #3    │ Bob     │ DEBIT  │ $100   │ Posted 2024-01-16 14:30:00       │
+│ Entry #4    │ Alice   │ CREDIT │ $100   │ Posted 2024-01-16 14:30:00       │
+└─────────────┴─────────┴────────┴────────┴──────────────────────────────────┘
+
+Net Effect: Alice $0, Bob $0 (back to original state)
+Original entries remain IMMUTABLE - audit trail preserved
+```
+
+#### Reversal Workflow
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         REVERSAL WORKFLOW                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ┌─────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
+│   │ Request │───▶│ Validate    │───▶│ Create      │───▶│ Post        │     │
+│   │ Reversal│    │ Original Txn│    │ Compensating│    │ Entries     │     │
+│   └─────────┘    └─────────────┘    │ Transaction │    └─────────────┘     │
+│                         │           └─────────────┘           │             │
+│                         ▼                  │                  ▼             │
+│                  ┌─────────────┐           │           ┌─────────────┐      │
+│                  │ Reversible? │           │           │ Update      │      │
+│                  │ • Not already│          │           │ Original    │      │
+│                  │   reversed   │          │           │ Status      │      │
+│                  │ • Within     │          │           │ → REVERSED  │      │
+│                  │   timeframe  │          │           └─────────────┘      │
+│                  │ • Balance OK │          │                  │             │
+│                  └─────────────┘           │                  ▼             │
+│                         │                  │           ┌─────────────┐      │
+│                         ▼                  │           │ Emit Event  │      │
+│                  ┌─────────────┐           │           │ txn.reversed│      │
+│                  │ Link via    │◀──────────┘           └─────────────┘      │
+│                  │ parent_txn_id                                            │
+│                  └─────────────┘                                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Reversal Constraints
+```sql
+-- Reversals reference the original transaction
+ALTER TABLE transactions ADD CONSTRAINT fk_parent_transaction
+    FOREIGN KEY (parent_transaction_id) REFERENCES transactions(id);
+
+-- Prevent double reversal
+CREATE UNIQUE INDEX idx_unique_reversal ON transactions(parent_transaction_id) 
+    WHERE transaction_type IN ('REFUND', 'VOID', 'CHARGEBACK');
+
+-- Reversal must match original amount (for full reversals)
+-- Enforced at application layer with partial refund tracking
+```
+
+#### Key Principles
+1. **Immutability**: Original ledger entries are NEVER modified
+2. **Traceability**: `parent_transaction_id` links reversal to original
+3. **Auditability**: Complete history preserved for compliance
+4. **Idempotency**: Same reversal request returns same result
+
+---
+
+### 3. Event Publishing Guarantees
+
+LedgerX uses the **Transactional Outbox Pattern** to ensure reliable event delivery without distributed transactions.
+
+#### Delivery Semantics
+| Guarantee | Implementation | Tradeoff |
+|-----------|----------------|----------|
+| **At-Least-Once** | ✅ Default | Consumers must be idempotent |
+| **Exactly-Once** | ❌ Not guaranteed | Too costly for performance |
+| **Ordering** | ✅ Per-wallet | Global ordering not guaranteed |
+
+#### Outbox Pattern Architecture
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    TRANSACTIONAL OUTBOX PATTERN                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  WRITE PATH (Atomic)                    PUBLISH PATH (Async)                 │
+│  ─────────────────────                  ────────────────────                 │
+│                                                                              │
+│  ┌─────────────┐                        ┌─────────────────┐                 │
+│  │ Application │                        │ Outbox Poller   │                 │
+│  │ Service     │                        │ (Debezium/Poll) │                 │
+│  └──────┬──────┘                        └────────┬────────┘                 │
+│         │                                        │                          │
+│         │ BEGIN TRANSACTION                      │ Poll every 100ms         │
+│         ▼                                        ▼                          │
+│  ┌─────────────────────────────────┐    ┌─────────────────┐                 │
+│  │         PostgreSQL              │    │ SELECT * FROM   │                 │
+│  │  ┌───────────────────────────┐  │    │ outbox_events   │                 │
+│  │  │ 1. INSERT ledger_entries  │  │    │ WHERE published │                 │
+│  │  │ 2. INSERT transactions    │  │───▶│ = FALSE         │                 │
+│  │  │ 3. INSERT outbox_events   │  │    │ ORDER BY seq    │                 │
+│  │  └───────────────────────────┘  │    └────────┬────────┘                 │
+│  │         COMMIT                  │             │                          │
+│  └─────────────────────────────────┘             │                          │
+│                                                  ▼                          │
+│                                         ┌─────────────────┐                 │
+│                                         │ Publish to      │                 │
+│                                         │ Kafka/SQS       │                 │
+│                                         └────────┬────────┘                 │
+│                                                  │                          │
+│                                                  ▼                          │
+│                                         ┌─────────────────┐                 │
+│                                         │ UPDATE outbox   │                 │
+│                                         │ SET published   │                 │
+│                                         │ = TRUE          │                 │
+│                                         └─────────────────┘                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Outbox Table Schema
+```sql
+CREATE TABLE outbox_events (
+    id BIGSERIAL PRIMARY KEY,
+    
+    -- Event identity
+    event_id UUID NOT NULL DEFAULT uuid_generate_v4(),
+    event_type VARCHAR(64) NOT NULL,           -- e.g., 'transaction.completed'
+    
+    -- Routing
+    aggregate_type VARCHAR(64) NOT NULL,       -- e.g., 'wallet', 'transaction'
+    aggregate_id UUID NOT NULL,                -- e.g., wallet_id
+    
+    -- Payload
+    payload JSONB NOT NULL,
+    
+    -- Publishing state
+    published BOOLEAN NOT NULL DEFAULT FALSE,
+    published_at TIMESTAMP WITH TIME ZONE,
+    publish_attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    
+    -- Ordering
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    
+    -- Cleanup
+    expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '7 days')
+);
+
+CREATE INDEX idx_outbox_unpublished ON outbox_events(created_at) 
+    WHERE published = FALSE;
+CREATE INDEX idx_outbox_aggregate ON outbox_events(aggregate_type, aggregate_id);
+```
+
+#### Event Types
+| Event | Trigger | Payload | Consumers |
+|-------|---------|---------|-----------|
+| `wallet.created` | Wallet creation | Wallet details | Analytics, Notifications |
+| `wallet.frozen` | Freeze action | Wallet ID, reason | Compliance, Notifications |
+| `transaction.pending` | Txn initiated | Transaction details | Webhooks, Monitoring |
+| `transaction.completed` | Txn success | Full transaction + entries | Webhooks, Analytics, Reconciliation |
+| `transaction.failed` | Txn failure | Transaction + error | Webhooks, Alerts |
+| `transaction.reversed` | Reversal posted | Original + reversal txn | Webhooks, Reconciliation |
+| `balance.updated` | Balance change | Wallet ID, new balance | Real-time dashboards |
+| `hold.created` | Hold placed | Hold details | Webhooks |
+| `hold.released` | Hold released/captured | Hold resolution | Webhooks |
+
+#### Consumer Idempotency
+Since we guarantee at-least-once delivery, consumers MUST be idempotent:
+
+```python
+# Consumer idempotency pattern
+async def handle_transaction_completed(event: Event):
+    # Check if already processed
+    if await event_store.is_processed(event.event_id):
+        logger.info(f"Event {event.event_id} already processed, skipping")
+        return
+    
+    try:
+        # Process event
+        await process_webhook(event)
+        
+        # Mark as processed
+        await event_store.mark_processed(event.event_id)
+    except Exception as e:
+        # Will be retried (at-least-once)
+        raise
+```
+
+#### Failure Handling
+| Failure | Detection | Recovery | SLA |
+|---------|-----------|----------|-----|
+| Poller crash | K8s liveness probe | Auto-restart, resume from last position | < 30s |
+| Kafka unavailable | Publish timeout | Exponential backoff, DLQ after 5 attempts | Events delayed, not lost |
+| Consumer crash | Consumer group rebalance | Another consumer picks up | < 10s |
+| Poison message | Repeated failures | Move to Dead Letter Queue + alert | Manual intervention |
+
+---
+
+### 4. Security Trust Boundaries
+
+#### Trust Zone Architecture
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         TRUST BOUNDARY ARCHITECTURE                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ZONE 0: PUBLIC (Untrusted)                                                  │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  Mobile Apps  │  Web Apps  │  Third-party Partners  │  Public Internet│  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                              │ HTTPS + mTLS (partners)                       │
+│                              ▼                                               │
+│  ─────────────────────── WAF / DDoS Protection ─────────────────────────    │
+│                              │                                               │
+│                              ▼                                               │
+│  ZONE 1: DMZ (Semi-trusted)                                                  │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                        API GATEWAY                                     │  │
+│  │  • Rate limiting      • JWT validation     • Request sanitization     │  │
+│  │  • API key validation • IP allowlisting    • Request/response logging │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                              │ Internal mTLS                                 │
+│                              ▼                                               │
+│  ZONE 2: APPLICATION (Trusted)                                               │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                    │  │
+│  │  │   Public    │  │  Internal   │  │   Admin     │                    │  │
+│  │  │   API       │  │  API        │  │   API       │                    │  │
+│  │  │ (Customer)  │  │ (Services)  │  │ (Operators) │                    │  │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘                    │  │
+│  │        │                │                │                             │  │
+│  │        └────────────────┴────────────────┘                             │  │
+│  │                         │                                              │  │
+│  │                    Service Mesh (Istio)                                │  │
+│  │                    • mTLS between services                             │  │
+│  │                    • Authorization policies                            │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                              │ Private subnet only                           │
+│                              ▼                                               │
+│  ZONE 3: DATA (Highly Trusted)                                               │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                    │  │
+│  │  │ PostgreSQL  │  │   Redis     │  │   Kafka     │                    │  │
+│  │  │ (Encrypted) │  │  (Auth'd)   │  │  (SASL)     │                    │  │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘                    │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### API Classification
+
+| API Type | Audience | Authentication | Authorization | Rate Limit |
+|----------|----------|----------------|---------------|------------|
+| **Public API** | End users, mobile apps | OAuth 2.0 + JWT | User can only access own resources | 100 req/min |
+| **Partner API** | B2B integrations | API Key + mTLS | Scoped to partner's users | 1000 req/min |
+| **Internal API** | Microservices | Service account + mTLS | Service-to-service policies | 10000 req/min |
+| **Admin API** | Platform operators | SSO + MFA + JWT | RBAC with approval workflows | 100 req/min |
+
+#### Authentication Flow
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      AUTHENTICATION FLOWS                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  PUBLIC API (End Users)                                                      │
+│  ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐           │
+│  │  Client  │────▶│  Auth0/  │────▶│   JWT    │────▶│  API     │           │
+│  │   App    │     │  Cognito │     │ (15min)  │     │ Gateway  │           │
+│  └──────────┘     └──────────┘     └──────────┘     └──────────┘           │
+│       │                                                   │                 │
+│       └─────────── Refresh Token (7 days) ───────────────┘                 │
+│                                                                              │
+│  PARTNER API (B2B)                                                          │
+│  ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐           │
+│  │ Partner  │────▶│  API Key │────▶│   mTLS   │────▶│  API     │           │
+│  │  Server  │     │ (Header) │     │  Cert    │     │ Gateway  │           │
+│  └──────────┘     └──────────┘     └──────────┘     └──────────┘           │
+│                                                                              │
+│  INTERNAL API (Service-to-Service)                                          │
+│  ┌──────────┐     ┌──────────┐     ┌──────────┐                             │
+│  │ Service  │────▶│  SPIFFE/ │────▶│  Target  │                             │
+│  │    A     │     │  mTLS    │     │ Service  │                             │
+│  └──────────┘     └──────────┘     └──────────┘                             │
+│                                                                              │
+│  ADMIN API (Operators)                                                       │
+│  ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐           │
+│  │  Admin   │────▶│   SSO    │────▶│   MFA    │────▶│  Admin   │           │
+│  │   User   │     │  (Okta)  │     │  (TOTP)  │     │   API    │           │
+│  └──────────┘     └──────────┘     └──────────┘     └──────────┘           │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Authorization Matrix
+
+| Resource | End User | Partner | Internal Service | Admin |
+|----------|----------|---------|------------------|-------|
+| Own wallet balance | ✅ Read | ✅ Read (their users) | ✅ Read/Write | ✅ Full |
+| Other wallet balance | ❌ | ❌ | ✅ Read | ✅ Read |
+| Create transaction | ✅ Own wallet | ✅ Their users | ✅ Any | ✅ Any |
+| Reverse transaction | ❌ | ✅ Their transactions | ✅ Any | ✅ Any |
+| Freeze wallet | ❌ | ❌ | ❌ | ✅ With approval |
+| View audit logs | ❌ | ❌ | ❌ | ✅ Compliance role |
+| System configuration | ❌ | ❌ | ❌ | ✅ Super admin |
+
+#### Secret Management
+```yaml
+# Secrets hierarchy (HashiCorp Vault)
+secret/
+├── ledgerx/
+│   ├── prod/
+│   │   ├── database/           # DB credentials (rotated daily)
+│   │   ├── redis/              # Redis auth
+│   │   ├── kafka/              # SASL credentials
+│   │   ├── jwt/                # JWT signing keys (rotated weekly)
+│   │   └── encryption/         # Data encryption keys
+│   ├── staging/
+│   └── dev/
+└── partners/
+    ├── partner-a/              # Partner-specific API keys
+    └── partner-b/
+```
+
+---
+
+### 5. Design Tradeoffs & Rationale
+
+#### Key Architectural Decisions
+
+| Decision | Chosen Approach | Alternative | Why This Choice |
+|----------|-----------------|-------------|-----------------|
+| **Balance Storage** | Cached + computed from ledger | Direct balance column | Audit trail + consistency > raw speed |
+| **Event Delivery** | At-least-once with outbox | Exactly-once (2PC) | Simpler, faster, idempotent consumers |
+| **Database** | PostgreSQL (single logical DB) | Microservice DBs | ACID for financial data, simpler transactions |
+| **Sharding** | Application-level by wallet_id | Database sharding | Flexibility, avoid cross-shard transactions |
+| **API Style** | REST + async events | GraphQL / gRPC | Simpler client integration, better caching |
+| **Reversal Model** | Compensating entries | Soft delete / mutation | Immutable audit trail, compliance |
+
+#### Tech Stack Rationale
+
+**Why PostgreSQL over distributed databases (CockroachDB, Spanner)?**
+- Financial transactions require strict SERIALIZABLE isolation
+- Simpler operational model for < 100K TPS
+- Proven reliability for banking workloads
+- Native partitioning handles scale requirements
+- Lower cost and complexity
+
+**Why Kafka over RabbitMQ/SQS?**
+- Log-based architecture matches ledger philosophy
+- Event replay for reconciliation and debugging
+- Higher throughput for event streaming
+- Consumer groups for parallel processing
+- Exactly-once semantics with transactions
+
+**Why FastAPI over Django/Go?**
+- Async-first for I/O-bound financial operations
+- Auto-generated OpenAPI for partner integration
+- Type hints catch errors at development time
+- Python ecosystem for data analysis/ML fraud detection
+- Acceptable performance with uvicorn + gunicorn
+
+#### CAP Theorem Positioning
+```
+              Consistency
+                  △
+                 /|\
+                / | \
+               /  |  \
+              /   |   \
+             / CP |    \
+            /  ●  |     \
+           / LedgerX     \
+          /      |       \
+         /       |        \
+        /________|_________\
+   Availability ──────── Partition
+                          Tolerance
+
+LedgerX chooses CP (Consistency + Partition Tolerance):
+- Financial accuracy is non-negotiable
+- Brief unavailability > incorrect balances
+- Async operations provide eventual availability
+```
+
+---
+
+### 6. Sequence Diagrams
+
+#### Transfer Flow (Happy Path)
+```
+┌─────────┐     ┌─────────┐     ┌─────────┐     ┌──────────┐     ┌─────────┐
+│ Client  │     │   API   │     │ Transfer│     │ Ledger   │     │  Kafka  │
+│         │     │ Gateway │     │ Service │     │ (Postgres)│    │         │
+└────┬────┘     └────┬────┘     └────┬────┘     └────┬─────┘     └────┬────┘
+     │               │               │               │                │
+     │ POST /transfer│               │               │                │
+     │──────────────▶│               │               │                │
+     │               │ Validate JWT  │               │                │
+     │               │──────────────▶│               │                │
+     │               │               │               │                │
+     │               │               │ BEGIN TXN     │                │
+     │               │               │──────────────▶│                │
+     │               │               │               │                │
+     │               │               │ Check balance │                │
+     │               │               │──────────────▶│                │
+     │               │               │◀──────────────│                │
+     │               │               │               │                │
+     │               │               │ INSERT entries│                │
+     │               │               │──────────────▶│                │
+     │               │               │               │                │
+     │               │               │ INSERT outbox │                │
+     │               │               │──────────────▶│                │
+     │               │               │               │                │
+     │               │               │ COMMIT        │                │
+     │               │               │──────────────▶│                │
+     │               │               │◀──────────────│                │
+     │               │               │               │                │
+     │               │◀──────────────│               │                │
+     │◀──────────────│               │               │                │
+     │  201 Created  │               │               │                │
+     │               │               │               │ Poll outbox    │
+     │               │               │               │───────────────▶│
+     │               │               │               │                │
+     │               │               │               │    Publish     │
+     │               │               │               │───────────────▶│
+     │               │               │               │                │
+```
+
+#### Hold → Capture Flow
+```
+┌─────────┐     ┌─────────┐     ┌─────────┐     ┌──────────┐
+│Merchant │     │   API   │     │ Hold    │     │ Database │
+│         │     │         │     │ Service │     │          │
+└────┬────┘     └────┬────┘     └────┬────┘     └────┬─────┘
+     │               │               │               │
+     │ POST /holds   │               │               │
+     │──────────────▶│──────────────▶│               │
+     │               │               │ Check avail   │
+     │               │               │──────────────▶│
+     │               │               │◀──────────────│
+     │               │               │               │
+     │               │               │ INSERT hold   │
+     │               │               │──────────────▶│
+     │               │               │               │
+     │               │               │ UPDATE balance│
+     │               │               │ (held_balance)│
+     │               │               │──────────────▶│
+     │               │◀──────────────│               │
+     │◀──────────────│ hold_id       │               │
+     │               │               │               │
+     │    ....       │   (time passes - up to 7 days)│
+     │               │               │               │
+     │ POST /capture │               │               │
+     │──────────────▶│──────────────▶│               │
+     │               │               │ Validate hold │
+     │               │               │──────────────▶│
+     │               │               │               │
+     │               │               │ CREATE debit  │
+     │               │               │ entries       │
+     │               │               │──────────────▶│
+     │               │               │               │
+     │               │               │ UPDATE hold   │
+     │               │               │ status=CAPTURED
+     │               │               │──────────────▶│
+     │               │◀──────────────│               │
+     │◀──────────────│ transaction   │               │
+```
+
+---
+
+## �📄 License
 
 MIT License - see [LICENSE](LICENSE) for details.
 

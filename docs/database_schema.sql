@@ -595,6 +595,43 @@ $$ LANGUAGE plpgsql;
 -- SYSTEM ACCOUNTS (Seed Data)
 -- ============================================================================
 
+-- -----------------------------------------------------------------------------
+-- Outbox Events Table (Transactional Outbox Pattern)
+-- Ensures at-least-once event delivery without distributed transactions
+-- -----------------------------------------------------------------------------
+CREATE TABLE outbox_events (
+    id BIGSERIAL PRIMARY KEY,
+    
+    -- Event identity
+    event_id UUID NOT NULL DEFAULT uuid_generate_v4(),
+    event_type VARCHAR(64) NOT NULL,                -- e.g., 'transaction.completed'
+    
+    -- Routing
+    aggregate_type VARCHAR(64) NOT NULL,            -- e.g., 'wallet', 'transaction'
+    aggregate_id UUID NOT NULL,                     -- e.g., wallet_id, transaction_id
+    
+    -- Payload
+    payload JSONB NOT NULL,
+    
+    -- Publishing state
+    published BOOLEAN NOT NULL DEFAULT FALSE,
+    published_at TIMESTAMP WITH TIME ZONE,
+    publish_attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    
+    -- Ordering (for per-aggregate ordering)
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    
+    -- Cleanup (events can be deleted after successful publish + retention)
+    expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '7 days')
+);
+
+CREATE INDEX idx_outbox_unpublished ON outbox_events(created_at) WHERE published = FALSE;
+CREATE INDEX idx_outbox_aggregate ON outbox_events(aggregate_type, aggregate_id, created_at);
+CREATE INDEX idx_outbox_expires ON outbox_events(expires_at) WHERE published = TRUE;
+
+COMMENT ON TABLE outbox_events IS 'Transactional outbox for reliable event publishing with at-least-once delivery';
+
 -- Create system wallets for internal operations
 INSERT INTO wallets (id, external_id, user_id, wallet_type, currency, status)
 VALUES 

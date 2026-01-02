@@ -1,0 +1,1273 @@
+openapi: 3.1.0
+info:
+  title: LedgerX API
+  description: |
+    Production-grade digital wallet & ledger API for fintech applications.
+    
+    ## Key Concepts
+    
+    - **Wallet**: An account that holds a balance in a specific currency
+    - **Transaction**: A record of a financial operation (credit, debit, transfer)
+    - **Ledger Entry**: An immutable journal entry that affects wallet balance
+    - **Hold**: A temporary reservation of funds
+    
+    ## Idempotency
+    
+    All write operations support idempotency via the `Idempotency-Key` header.
+    Provide a unique key (UUID recommended) to safely retry requests.
+    
+    ## Authentication
+    
+    All endpoints require Bearer token authentication via the `Authorization` header.
+    
+  version: 1.0.0
+  contact:
+    name: LedgerX API Support
+    email: api-support@ledgerx.io
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.ledgerx.io/v1
+    description: Production
+  - url: https://sandbox.ledgerx.io/v1
+    description: Sandbox
+  - url: http://localhost:8000/v1
+    description: Local Development
+
+tags:
+  - name: Wallets
+    description: Wallet lifecycle management
+  - name: Transactions
+    description: Financial transactions and transfers
+  - name: Ledger
+    description: Ledger entries and balance queries
+  - name: Holds
+    description: Fund authorization and holds
+  - name: Health
+    description: Service health checks
+
+paths:
+  # ===========================================================================
+  # WALLET ENDPOINTS
+  # ===========================================================================
+  
+  /wallets:
+    post:
+      tags: [Wallets]
+      summary: Create a new wallet
+      description: |
+        Creates a new wallet for a user. Each user can have multiple wallets
+        in different currencies.
+      operationId: createWallet
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWalletRequest'
+            examples:
+              basic:
+                summary: Basic wallet creation
+                value:
+                  external_id: "user-wallet-001"
+                  user_id: "550e8400-e29b-41d4-a716-446655440000"
+                  currency: "USD"
+              with_limits:
+                summary: Wallet with custom limits
+                value:
+                  external_id: "merchant-wallet-001"
+                  user_id: "550e8400-e29b-41d4-a716-446655440001"
+                  currency: "IDR"
+                  wallet_type: "MERCHANT"
+                  daily_limit: 50000000
+                  monthly_limit: 500000000
+      responses:
+        '201':
+          description: Wallet created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    
+    get:
+      tags: [Wallets]
+      summary: List wallets
+      description: Retrieve a paginated list of wallets for the authenticated user/organization
+      operationId: listWallets
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: user_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by user ID
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/WalletStatus'
+        - name: currency
+          in: query
+          schema:
+            $ref: '#/components/schemas/CurrencyCode'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: List of wallets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletListResponse'
+
+  /wallets/{wallet_id}:
+    get:
+      tags: [Wallets]
+      summary: Get wallet details
+      description: Retrieve detailed information about a specific wallet including balance
+      operationId: getWallet
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+      responses:
+        '200':
+          description: Wallet details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    
+    patch:
+      tags: [Wallets]
+      summary: Update wallet
+      description: Update wallet settings (limits, metadata)
+      operationId: updateWallet
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWalletRequest'
+      responses:
+        '200':
+          description: Wallet updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /wallets/{wallet_id}/balance:
+    get:
+      tags: [Wallets]
+      summary: Get wallet balance
+      description: |
+        Retrieve the current balance breakdown for a wallet.
+        
+        Balance types:
+        - **posted_balance**: Settled, confirmed funds
+        - **pending_credits**: Incoming funds not yet settled
+        - **pending_debits**: Outgoing funds not yet settled
+        - **held_balance**: Funds reserved for pending transactions
+        - **available_balance**: Funds available for new transactions
+      operationId: getWalletBalance
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+      responses:
+        '200':
+          description: Balance details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /wallets/{wallet_id}/freeze:
+    post:
+      tags: [Wallets]
+      summary: Freeze wallet
+      description: Freeze a wallet to prevent all transactions
+      operationId: freezeWallet
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  maxLength: 255
+                  example: "Suspicious activity detected"
+      responses:
+        '200':
+          description: Wallet frozen
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /wallets/{wallet_id}/unfreeze:
+    post:
+      tags: [Wallets]
+      summary: Unfreeze wallet
+      description: Unfreeze a previously frozen wallet
+      operationId: unfreezeWallet
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Wallet unfrozen
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # ===========================================================================
+  # TRANSACTION ENDPOINTS
+  # ===========================================================================
+
+  /transactions/credit:
+    post:
+      tags: [Transactions]
+      summary: Credit a wallet
+      description: |
+        Add funds to a wallet (top-up, refund, cashback).
+        This creates a single-sided ledger entry crediting the destination wallet.
+      operationId: creditWallet
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreditRequest'
+            example:
+              wallet_id: "550e8400-e29b-41d4-a716-446655440000"
+              amount: "100.00"
+              currency: "USD"
+              reference_id: "topup-001"
+              description: "Wallet top-up via bank transfer"
+      responses:
+        '201':
+          description: Credit completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /transactions/debit:
+    post:
+      tags: [Transactions]
+      summary: Debit a wallet
+      description: |
+        Remove funds from a wallet (payment, withdrawal).
+        This creates a single-sided ledger entry debiting the source wallet.
+        
+        Fails if available balance is insufficient.
+      operationId: debitWallet
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DebitRequest'
+            example:
+              wallet_id: "550e8400-e29b-41d4-a716-446655440000"
+              amount: "50.00"
+              currency: "USD"
+              reference_id: "payment-001"
+              description: "Payment for order #12345"
+      responses:
+        '201':
+          description: Debit completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/InsufficientFunds'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /transactions/transfer:
+    post:
+      tags: [Transactions]
+      summary: Transfer between wallets
+      description: |
+        Transfer funds from one wallet to another.
+        This is an atomic operation that creates two ledger entries:
+        - DEBIT on source wallet
+        - CREDIT on destination wallet
+        
+        Both entries are posted in the same database transaction.
+      operationId: transfer
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferRequest'
+            example:
+              source_wallet_id: "550e8400-e29b-41d4-a716-446655440000"
+              destination_wallet_id: "550e8400-e29b-41d4-a716-446655440001"
+              amount: "25.00"
+              currency: "USD"
+              description: "P2P transfer to John"
+      responses:
+        '201':
+          description: Transfer completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/InsufficientFunds'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /transactions/{transaction_id}:
+    get:
+      tags: [Transactions]
+      summary: Get transaction details
+      description: Retrieve details of a specific transaction
+      operationId: getTransaction
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TransactionId'
+      responses:
+        '200':
+          description: Transaction details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /transactions:
+    get:
+      tags: [Transactions]
+      summary: List transactions
+      description: Retrieve a paginated list of transactions
+      operationId: listTransactions
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: wallet_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by wallet ID (source or destination)
+        - name: transaction_type
+          in: query
+          schema:
+            $ref: '#/components/schemas/TransactionType'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TransactionStatus'
+        - name: from_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: List of transactions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionListResponse'
+
+  # ===========================================================================
+  # HOLD ENDPOINTS
+  # ===========================================================================
+
+  /holds:
+    post:
+      tags: [Holds]
+      summary: Create a hold
+      description: |
+        Reserve funds for a pending transaction. Held funds reduce the
+        available balance but don't affect the posted balance.
+        
+        Holds expire automatically after the specified duration.
+      operationId: createHold
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateHoldRequest'
+            example:
+              wallet_id: "550e8400-e29b-41d4-a716-446655440000"
+              amount: "100.00"
+              currency: "USD"
+              expires_in_minutes: 30
+              reference_id: "order-12345"
+      responses:
+        '201':
+          description: Hold created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HoldResponse'
+        '402':
+          $ref: '#/components/responses/InsufficientFunds'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /holds/{hold_id}:
+    get:
+      tags: [Holds]
+      summary: Get hold details
+      operationId: getHold
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HoldId'
+      responses:
+        '200':
+          description: Hold details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HoldResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /holds/{hold_id}/capture:
+    post:
+      tags: [Holds]
+      summary: Capture a hold
+      description: |
+        Convert a hold to an actual debit. Can capture the full amount
+        or a partial amount. Remaining held funds are released.
+      operationId: captureHold
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HoldId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: string
+                  pattern: '^\d+(\.\d{1,4})?$'
+                  description: Amount to capture (defaults to full hold amount)
+      responses:
+        '200':
+          description: Hold captured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /holds/{hold_id}/release:
+    post:
+      tags: [Holds]
+      summary: Release a hold
+      description: Cancel a hold and restore the funds to available balance
+      operationId: releaseHold
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HoldId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Hold released
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HoldResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # ===========================================================================
+  # LEDGER ENDPOINTS
+  # ===========================================================================
+
+  /ledger/entries:
+    get:
+      tags: [Ledger]
+      summary: List ledger entries
+      description: Retrieve ledger entries for a wallet (statement)
+      operationId: listLedgerEntries
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: wallet_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: from_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: entry_type
+          in: query
+          schema:
+            $ref: '#/components/schemas/EntryType'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: List of ledger entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerEntryListResponse'
+
+  /ledger/reconcile:
+    post:
+      tags: [Ledger]
+      summary: Trigger reconciliation
+      description: |
+        Verify that cached balances match computed balances from ledger.
+        This is typically run as a scheduled job but can be triggered manually.
+      operationId: reconcile
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: wallet_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Specific wallet to reconcile (defaults to all)
+      responses:
+        '200':
+          description: Reconciliation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconciliationResponse'
+
+  # ===========================================================================
+  # HEALTH ENDPOINTS
+  # ===========================================================================
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness check
+      description: Check if service is ready to accept traffic
+      operationId: readinessCheck
+      responses:
+        '200':
+          description: Service is ready
+        '503':
+          description: Service is not ready
+
+components:
+  # ===========================================================================
+  # SECURITY SCHEMES
+  # ===========================================================================
+  
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token from authentication service
+    
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for partner integrations
+
+  # ===========================================================================
+  # PARAMETERS
+  # ===========================================================================
+
+  parameters:
+    WalletId:
+      name: wallet_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Unique wallet identifier
+    
+    TransactionId:
+      name: transaction_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Unique transaction identifier
+    
+    HoldId:
+      name: hold_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Unique hold identifier
+    
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        maxLength: 128
+      description: Unique key for request deduplication (UUID recommended)
+      example: "550e8400-e29b-41d4-a716-446655440000"
+    
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: Number of items per page
+    
+    PageToken:
+      name: page_token
+      in: query
+      schema:
+        type: string
+      description: Token for next page of results
+
+  # ===========================================================================
+  # SCHEMAS
+  # ===========================================================================
+
+  schemas:
+    # Enums
+    WalletStatus:
+      type: string
+      enum: [ACTIVE, FROZEN, SUSPENDED, CLOSED]
+    
+    WalletType:
+      type: string
+      enum: [USER, MERCHANT, SYSTEM, FLOAT, SETTLEMENT]
+    
+    TransactionStatus:
+      type: string
+      enum: [PENDING, PROCESSING, COMPLETED, FAILED, REVERSED, EXPIRED]
+    
+    TransactionType:
+      type: string
+      enum: [CREDIT, DEBIT, TRANSFER, HOLD, RELEASE, CAPTURE, REFUND, FEE, ADJUSTMENT]
+    
+    EntryType:
+      type: string
+      enum: [DEBIT, CREDIT]
+    
+    CurrencyCode:
+      type: string
+      enum: [USD, IDR, PHP, VND, THB, MYR, SGD, INR, JPY, KRW]
+
+    # Request Schemas
+    CreateWalletRequest:
+      type: object
+      required: [external_id, user_id, currency]
+      properties:
+        external_id:
+          type: string
+          maxLength: 64
+          description: Client-provided unique identifier
+        user_id:
+          type: string
+          format: uuid
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        wallet_type:
+          $ref: '#/components/schemas/WalletType'
+          default: USER
+        daily_limit:
+          type: string
+          pattern: '^\d+(\.\d{1,4})?$'
+          description: Daily transaction limit
+        monthly_limit:
+          type: string
+          pattern: '^\d+(\.\d{1,4})?$'
+          description: Monthly transaction limit
+        metadata:
+          type: object
+          additionalProperties: true
+    
+    UpdateWalletRequest:
+      type: object
+      properties:
+        daily_limit:
+          type: string
+          pattern: '^\d+(\.\d{1,4})?$'
+        monthly_limit:
+          type: string
+          pattern: '^\d+(\.\d{1,4})?$'
+        metadata:
+          type: object
+          additionalProperties: true
+    
+    CreditRequest:
+      type: object
+      required: [wallet_id, amount, currency]
+      properties:
+        wallet_id:
+          type: string
+          format: uuid
+        amount:
+          type: string
+          pattern: '^\d+(\.\d{1,4})?$'
+          description: Amount to credit (string to preserve precision)
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        reference_id:
+          type: string
+          maxLength: 128
+        description:
+          type: string
+          maxLength: 512
+        metadata:
+          type: object
+          additionalProperties: true
+    
+    DebitRequest:
+      type: object
+      required: [wallet_id, amount, currency]
+      properties:
+        wallet_id:
+          type: string
+          format: uuid
+        amount:
+          type: string
+          pattern: '^\d+(\.\d{1,4})?$'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        reference_id:
+          type: string
+          maxLength: 128
+        description:
+          type: string
+          maxLength: 512
+        metadata:
+          type: object
+          additionalProperties: true
+    
+    TransferRequest:
+      type: object
+      required: [source_wallet_id, destination_wallet_id, amount, currency]
+      properties:
+        source_wallet_id:
+          type: string
+          format: uuid
+        destination_wallet_id:
+          type: string
+          format: uuid
+        amount:
+          type: string
+          pattern: '^\d+(\.\d{1,4})?$'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        description:
+          type: string
+          maxLength: 512
+        metadata:
+          type: object
+          additionalProperties: true
+    
+    CreateHoldRequest:
+      type: object
+      required: [wallet_id, amount, currency]
+      properties:
+        wallet_id:
+          type: string
+          format: uuid
+        amount:
+          type: string
+          pattern: '^\d+(\.\d{1,4})?$'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        expires_in_minutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+          default: 1440
+          description: Hold expiration in minutes (default 24 hours)
+        reference_id:
+          type: string
+          maxLength: 128
+        metadata:
+          type: object
+          additionalProperties: true
+
+    # Response Schemas
+    WalletResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        external_id:
+          type: string
+        user_id:
+          type: string
+          format: uuid
+        wallet_type:
+          $ref: '#/components/schemas/WalletType'
+        status:
+          $ref: '#/components/schemas/WalletStatus'
+        status_reason:
+          type: string
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        balance:
+          $ref: '#/components/schemas/BalanceResponse'
+        daily_limit:
+          type: string
+        monthly_limit:
+          type: string
+        metadata:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    
+    WalletListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WalletResponse'
+        next_page_token:
+          type: string
+        total_count:
+          type: integer
+    
+    BalanceResponse:
+      type: object
+      properties:
+        wallet_id:
+          type: string
+          format: uuid
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        posted_balance:
+          type: string
+          description: Settled, confirmed funds
+        pending_credits:
+          type: string
+          description: Incoming funds not yet settled
+        pending_debits:
+          type: string
+          description: Outgoing funds not yet settled
+        held_balance:
+          type: string
+          description: Funds reserved for pending transactions
+        available_balance:
+          type: string
+          description: Funds available for new transactions
+        as_of:
+          type: string
+          format: date-time
+          description: Timestamp of balance calculation
+    
+    TransactionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        idempotency_key:
+          type: string
+        transaction_type:
+          $ref: '#/components/schemas/TransactionType'
+        status:
+          $ref: '#/components/schemas/TransactionStatus'
+        source_wallet_id:
+          type: string
+          format: uuid
+        destination_wallet_id:
+          type: string
+          format: uuid
+        amount:
+          type: string
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        fee_amount:
+          type: string
+        reference_id:
+          type: string
+        description:
+          type: string
+        metadata:
+          type: object
+        failure_reason:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        processed_at:
+          type: string
+          format: date-time
+        ledger_entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/LedgerEntryResponse'
+    
+    TransactionListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionResponse'
+        next_page_token:
+          type: string
+        total_count:
+          type: integer
+    
+    HoldResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        wallet_id:
+          type: string
+          format: uuid
+        transaction_id:
+          type: string
+          format: uuid
+        amount:
+          type: string
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        status:
+          type: string
+          enum: [ACTIVE, CAPTURED, RELEASED, EXPIRED]
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: string
+          format: date-time
+    
+    LedgerEntryResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        transaction_id:
+          type: string
+          format: uuid
+        wallet_id:
+          type: string
+          format: uuid
+        entry_type:
+          $ref: '#/components/schemas/EntryType'
+        amount:
+          type: string
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        status:
+          type: string
+          enum: [PENDING, POSTED, VOIDED]
+        running_balance:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        posted_at:
+          type: string
+          format: date-time
+    
+    LedgerEntryListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LedgerEntryResponse'
+        next_page_token:
+          type: string
+        total_count:
+          type: integer
+        opening_balance:
+          type: string
+        closing_balance:
+          type: string
+    
+    ReconciliationResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [PASSED, FAILED]
+        wallets_checked:
+          type: integer
+        discrepancies:
+          type: array
+          items:
+            type: object
+            properties:
+              wallet_id:
+                type: string
+                format: uuid
+              cached_balance:
+                type: string
+              computed_balance:
+                type: string
+              difference:
+                type: string
+        completed_at:
+          type: string
+          format: date-time
+    
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        version:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        checks:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [ok, degraded, error]
+            cache:
+              type: string
+              enum: [ok, degraded, error]
+            queue:
+              type: string
+              enum: [ok, degraded, error]
+    
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+            message:
+              type: string
+              description: Human-readable error message
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
+            request_id:
+              type: string
+              format: uuid
+
+  # ===========================================================================
+  # RESPONSES
+  # ===========================================================================
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "INVALID_REQUEST"
+              message: "Invalid request parameters"
+              request_id: "550e8400-e29b-41d4-a716-446655440000"
+    
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "NOT_FOUND"
+              message: "Wallet not found"
+              request_id: "550e8400-e29b-41d4-a716-446655440000"
+    
+    Conflict:
+      description: Conflict with existing resource or state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "CONFLICT"
+              message: "Wallet is already frozen"
+              request_id: "550e8400-e29b-41d4-a716-446655440000"
+    
+    InsufficientFunds:
+      description: Insufficient balance for operation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "INSUFFICIENT_FUNDS"
+              message: "Available balance is insufficient for this transaction"
+              details:
+                - field: "amount"
+                  message: "Required: 100.00, Available: 50.00"
+              request_id: "550e8400-e29b-41d4-a716-446655440000"
+    
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "VALIDATION_ERROR"
+              message: "Request validation failed"
+              details:
+                - field: "amount"
+                  message: "Must be a positive number"
+                - field: "currency"
+                  message: "Invalid currency code"
+              request_id: "550e8400-e29b-41d4-a716-446655440000"

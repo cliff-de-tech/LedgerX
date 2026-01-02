@@ -1,0 +1,80 @@
+# LedgerX Requirements
+# Production-grade digital wallet & ledger backend
+
+# ==============================================================================
+# Core Framework
+# ==============================================================================
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# ==============================================================================
+# Database
+# ==============================================================================
+sqlalchemy==2.0.25
+asyncpg==0.29.0                    # Async PostgreSQL driver
+alembic==1.13.1                    # Database migrations
+psycopg2-binary==2.9.9             # Sync PostgreSQL (for migrations)
+
+# ==============================================================================
+# Caching & Message Queue
+# ==============================================================================
+redis==5.0.1
+aioredis==2.0.1                    # Async Redis
+aiokafka==0.10.0                   # Async Kafka producer/consumer
+
+# ==============================================================================
+# Security & Auth
+# ==============================================================================
+python-jose[cryptography]==3.3.0  # JWT handling
+passlib[bcrypt]==1.7.4            # Password hashing
+cryptography==41.0.7               # Encryption utilities
+
+# ==============================================================================
+# Validation & Serialization
+# ==============================================================================
+python-multipart==0.0.6            # Form data parsing
+email-validator==2.1.0             # Email validation
+orjson==3.9.10                     # Fast JSON serialization
+
+# ==============================================================================
+# HTTP Client
+# ==============================================================================
+httpx==0.26.0                      # Async HTTP client
+tenacity==8.2.3                    # Retry logic
+
+# ==============================================================================
+# Observability
+# ==============================================================================
+structlog==24.1.0                  # Structured logging
+opentelemetry-api==1.22.0
+opentelemetry-sdk==1.22.0
+opentelemetry-instrumentation-fastapi==0.43b0
+opentelemetry-exporter-jaeger==1.21.0
+prometheus-client==0.19.0          # Metrics
+
+# ==============================================================================
+# Utilities
+# ==============================================================================
+python-dateutil==2.8.2
+pytz==2024.1
+ulid-py==1.1.0                     # Sortable unique IDs
+shortuuid==1.0.11
+
+# ==============================================================================
+# Development & Testing
+# ==============================================================================
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+httpx==0.26.0                      # Test client
+factory-boy==3.3.0                 # Test fixtures
+faker==22.0.0                      # Fake data generation
+
+# ==============================================================================
+# Code Quality
+# ==============================================================================
+ruff==0.1.11                       # Linting & formatting
+mypy==1.8.0                        # Type checking
+pre-commit==3.6.0                  # Git hooks

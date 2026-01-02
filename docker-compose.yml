@@ -1,0 +1,227 @@
+# ==============================================================================
+# LedgerX Docker Compose - Local Development
+# ==============================================================================
+
+version: '3.9'
+
+services:
+  # ============================================================================
+  # API Service
+  # ============================================================================
+  api:
+    build:
+      context: .
+      target: development
+    container_name: ledgerx-api
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://ledgerx:ledgerx_secret@postgres:5432/ledgerx
+      - REDIS_URL=redis://redis:6379/0
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SECRET_KEY=dev-secret-key-change-in-production
+    volumes:
+      - ./app:/app/app:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ledgerx-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ============================================================================
+  # PostgreSQL Database
+  # ============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: ledgerx-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ledgerx
+      POSTGRES_PASSWORD: ledgerx_secret
+      POSTGRES_DB: ledgerx
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docs/database_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    networks:
+      - ledgerx-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledgerx -d ledgerx"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # Redis Cache
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: ledgerx-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - ledgerx-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # Apache Kafka (Event Streaming)
+  # ============================================================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: ledgerx-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    networks:
+      - ledgerx-network
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: ledgerx-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    depends_on:
+      - zookeeper
+    networks:
+      - ledgerx-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Kafka UI (Development Tool)
+  # ============================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: ledgerx-kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: ledgerx
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    depends_on:
+      - kafka
+    networks:
+      - ledgerx-network
+    restart: unless-stopped
+    profiles:
+      - tools
+
+  # ============================================================================
+  # Prometheus (Metrics)
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: ledgerx-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - ledgerx-network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # ============================================================================
+  # Grafana (Dashboards)
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: ledgerx-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - ledgerx-network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # ============================================================================
+  # Jaeger (Distributed Tracing)
+  # ============================================================================
+  jaeger:
+    image: jaegertracing/all-in-one:1.50
+    container_name: ledgerx-jaeger
+    ports:
+      - "16686:16686"   # UI
+      - "6831:6831/udp" # Thrift compact
+      - "14268:14268"   # HTTP collector
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - ledgerx-network
+    restart: unless-stopped
+    profiles:
+      - tracing
+
+# ==============================================================================
+# Networks
+# ==============================================================================
+networks:
+  ledgerx-network:
+    driver: bridge
+    name: ledgerx-network
+
+# ==============================================================================
+# Volumes
+# ==============================================================================
+volumes:
+  postgres_data:
+    name: ledgerx-postgres-data
+  redis_data:
+    name: ledgerx-redis-data
+  zookeeper_data:
+    name: ledgerx-zookeeper-data
+  kafka_data:
+    name: ledgerx-kafka-data
+  prometheus_data:
+    name: ledgerx-prometheus-data
+  grafana_data:
+    name: ledgerx-grafana-data

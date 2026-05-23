@@ -35,9 +35,14 @@ def test_validate_hold_expiry_rejects_out_of_range():
         )
 
 
+def test_validate_hold_expiry_rejects_below_minimum():
+    with pytest.raises(ValidationError):
+        TransactionService._validate_hold_expiry(0)
+
+
 def test_validate_capture_amount_rejects_excess():
     with pytest.raises(InvalidAmountError):
         TransactionService._validate_capture_amount(
-            Decimal("10"),
-            Decimal("5")
+            capture_amount=Decimal("10"),
+            held_amount=Decimal("5")
         )

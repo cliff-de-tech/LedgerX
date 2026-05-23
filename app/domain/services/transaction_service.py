@@ -23,9 +23,11 @@ from app.core.exceptions import (
     HoldStateError,
     IdempotencyConflictError,
     InsufficientFundsError,
+    InvalidAmountError,
     SameWalletTransferError,
     TransactionAlreadyProcessedError,
     TransactionNotFoundError,
+    ValidationError,
     WalletFrozenError,
     WalletNotFoundError,
 )
@@ -105,6 +107,8 @@ class TransactionService:
         )
         if existing:
             return existing
+        
+        self._validate_amount(amount)
         
         # Validate wallet
         wallet = await self._get_active_wallet(wallet_id)
@@ -202,6 +206,8 @@ class TransactionService:
         )
         if existing:
             return existing
+        
+        self._validate_amount(amount)
         
         # Validate wallet
         wallet = await self._get_active_wallet(wallet_id)
@@ -318,6 +324,8 @@ class TransactionService:
         if existing:
             return existing
         
+        self._validate_amount(amount)
+        
         # Validate both wallets
         source_wallet = await self._get_active_wallet(source_wallet_id)
         dest_wallet = await self._get_active_wallet(destination_wallet_id)
@@ -384,7 +392,7 @@ class TransactionService:
         wallet_id: UUID,
         amount: Decimal,
         currency: CurrencyCode,
-        expires_in_minutes: int = 1440,  # 24 hours
+        expires_in_minutes: int = settings.DEFAULT_HOLD_EXPIRY_MINUTES,
         reference_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         actor_id: UUID | None = None,
@@ -426,6 +434,9 @@ class TransactionService:
             result = await self.session.execute(hold_query)
             hold = result.scalar_one()
             return existing, hold
+        
+        self._validate_amount(amount)
+        self._validate_hold_expiry(expires_in_minutes)
         
         # Validate wallet
         wallet = await self._get_active_wallet(wallet_id)
@@ -539,6 +550,9 @@ class TransactionService:
         )
         if existing:
             return existing
+        
+        self._validate_amount(capture_amount)
+        self._validate_capture_amount(capture_amount, hold.amount)
         
         # Create capture transaction
         transaction = TransactionORM(
@@ -730,3 +744,47 @@ class TransactionService:
         """Create deterministic hash of request data."""
         serialized = json.dumps(data, sort_keys=True)
         return hashlib.sha256(serialized.encode()).hexdigest()
+
+    @staticmethod
+    def _validate_amount(amount: Decimal) -> None:
+        """Validate transaction amount against configured limits."""
+        min_amount = Decimal(str(settings.MIN_TRANSACTION_AMOUNT))
+        max_amount = Decimal(str(settings.MAX_TRANSACTION_AMOUNT))
+        
+        if amount <= 0:
+            raise InvalidAmountError(amount, reason="Amount must be positive")
+        if amount < min_amount:
+            raise InvalidAmountError(
+                amount,
+                reason=f"Amount must be at least {min_amount}"
+            )
+        if amount > max_amount:
+            raise InvalidAmountError(
+                amount,
+                reason=f"Amount must be at most {max_amount}"
+            )
+
+    @staticmethod
+    def _validate_hold_expiry(expires_in_minutes: int) -> None:
+        """Validate hold expiry duration."""
+        max_expiry = settings.MAX_HOLD_EXPIRY_MINUTES
+        if expires_in_minutes < 1 or expires_in_minutes > max_expiry:
+            raise ValidationError(
+                message="Invalid hold expiry duration",
+                details=[{
+                    "field": "expires_in_minutes",
+                    "message": f"Expiry must be between 1 and {max_expiry} minutes"
+                }]
+            )
+
+    @staticmethod
+    def _validate_capture_amount(
+        capture_amount: Decimal,
+        held_amount: Decimal
+    ) -> None:
+        """Ensure capture amount does not exceed held amount."""
+        if capture_amount > held_amount:
+            raise InvalidAmountError(
+                capture_amount,
+                reason=f"Capture amount exceeds held amount of {held_amount}"
+            )

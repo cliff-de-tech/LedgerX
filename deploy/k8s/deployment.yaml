@@ -39,7 +39,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
-      
+
       # Pod anti-affinity for high availability
       affinity:
         podAntiAffinity:
@@ -53,17 +53,17 @@ spec:
                       values:
                         - ledgerx
                 topologyKey: kubernetes.io/hostname
-      
+
       containers:
         - name: api
           image: ledgerx/api:latest
           imagePullPolicy: Always
-          
+
           ports:
             - name: http
               containerPort: 8000
               protocol: TCP
-          
+
           env:
             - name: ENVIRONMENT
               value: "production"
@@ -87,7 +87,7 @@ spec:
                 configMapKeyRef:
                   name: ledgerx-config
                   key: kafka-bootstrap-servers
-          
+
           resources:
             requests:
               cpu: "500m"
@@ -95,7 +95,7 @@ spec:
             limits:
               cpu: "2000m"
               memory: "2Gi"
-          
+
           livenessProbe:
             httpGet:
               path: /health
@@ -104,7 +104,7 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
-          
+
           readinessProbe:
             httpGet:
               path: /health/ready
@@ -113,7 +113,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
-          
+
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

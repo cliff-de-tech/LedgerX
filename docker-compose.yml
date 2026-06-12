@@ -18,8 +18,8 @@ services:
     environment:
       - ENVIRONMENT=development
       - DEBUG=true
-      - DATABASE_URL=postgresql+asyncpg://ledgerx:ledgerx_secret@postgres:5432/ledgerx
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis:      - DATABASE_URL=postgresql+asyncpg://ledgerx:ledgerx_secret@postgres:5432/ledgerx
+//redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SECRET_KEY=dev-secret-key-change-in-production
     volumes:

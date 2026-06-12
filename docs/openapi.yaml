@@ -3,23 +3,23 @@ info:
   title: LedgerX API
   description: |
     Production-grade digital wallet & ledger API for fintech applications.
-    
+
     ## Key Concepts
-    
+
     - **Wallet**: An account that holds a balance in a specific currency
     - **Transaction**: A record of a financial operation (credit, debit, transfer)
     - **Ledger Entry**: An immutable journal entry that affects wallet balance
     - **Hold**: A temporary reservation of funds
-    
+
     ## Idempotency
-    
+
     All write operations support idempotency via the `Idempotency-Key` header.
     Provide a unique key (UUID recommended) to safely retry requests.
-    
+
     ## Authentication
-    
+
     All endpoints require Bearer token authentication via the `Authorization` header.
-    
+
   version: 1.0.0
   contact:
     name: LedgerX API Support
@@ -52,7 +52,7 @@ paths:
   # ===========================================================================
   # WALLET ENDPOINTS
   # ===========================================================================
-  
+
   /wallets:
     post:
       tags: [Wallets]
@@ -100,7 +100,7 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/ValidationError'
-    
+
     get:
       tags: [Wallets]
       summary: List wallets
@@ -152,7 +152,7 @@ paths:
                 $ref: '#/components/schemas/WalletResponse'
         '404':
           $ref: '#/components/responses/NotFound'
-    
+
     patch:
       tags: [Wallets]
       summary: Update wallet
@@ -187,7 +187,7 @@ paths:
       summary: Get wallet balance
       description: |
         Retrieve the current balance breakdown for a wallet.
-        
+
         Balance types:
         - **posted_balance**: Settled, confirmed funds
         - **pending_credits**: Incoming funds not yet settled
@@ -318,7 +318,7 @@ paths:
       description: |
         Remove funds from a wallet (payment, withdrawal).
         This creates a single-sided ledger entry debiting the source wallet.
-        
+
         Fails if available balance is insufficient.
       operationId: debitWallet
       security:
@@ -362,7 +362,7 @@ paths:
         This is an atomic operation that creates two ledger entries:
         - DEBIT on source wallet
         - CREDIT on destination wallet
-        
+
         Both entries are posted in the same database transaction.
       operationId: transfer
       security:
@@ -471,7 +471,7 @@ paths:
       description: |
         Reserve funds for a pending transaction. Held funds reduce the
         available balance but don't affect the posted balance.
-        
+
         Holds expire automatically after the specified duration.
       operationId: createHold
       security:
@@ -680,14 +680,14 @@ components:
   # ===========================================================================
   # SECURITY SCHEMES
   # ===========================================================================
-  
+
   securitySchemes:
     BearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
       description: JWT token from authentication service
-    
+
     ApiKeyAuth:
       type: apiKey
       in: header
@@ -707,7 +707,7 @@ components:
         type: string
         format: uuid
       description: Unique wallet identifier
-    
+
     TransactionId:
       name: transaction_id
       in: path
@@ -716,7 +716,7 @@ components:
         type: string
         format: uuid
       description: Unique transaction identifier
-    
+
     HoldId:
       name: hold_id
       in: path
@@ -725,7 +725,7 @@ components:
         type: string
         format: uuid
       description: Unique hold identifier
-    
+
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -735,7 +735,7 @@ components:
         maxLength: 128
       description: Unique key for request deduplication (UUID recommended)
       example: "550e8400-e29b-41d4-a716-446655440000"
-    
+
     PageSize:
       name: page_size
       in: query
@@ -745,7 +745,7 @@ components:
         maximum: 100
         default: 20
       description: Number of items per page
-    
+
     PageToken:
       name: page_token
       in: query
@@ -762,23 +762,23 @@ components:
     WalletStatus:
       type: string
       enum: [ACTIVE, FROZEN, SUSPENDED, CLOSED]
-    
+
     WalletType:
       type: string
       enum: [USER, MERCHANT, SYSTEM, FLOAT, SETTLEMENT]
-    
+
     TransactionStatus:
       type: string
       enum: [PENDING, PROCESSING, COMPLETED, FAILED, REVERSED, EXPIRED]
-    
+
     TransactionType:
       type: string
       enum: [CREDIT, DEBIT, TRANSFER, HOLD, RELEASE, CAPTURE, REFUND, FEE, ADJUSTMENT]
-    
+
     EntryType:
       type: string
       enum: [DEBIT, CREDIT]
-    
+
     CurrencyCode:
       type: string
       enum: [USD, IDR, PHP, VND, THB, MYR, SGD, INR, JPY, KRW]
@@ -811,7 +811,7 @@ components:
         metadata:
           type: object
           additionalProperties: true
-    
+
     UpdateWalletRequest:
       type: object
       properties:
@@ -824,7 +824,7 @@ components:
         metadata:
           type: object
           additionalProperties: true
-    
+
     CreditRequest:
       type: object
       required: [wallet_id, amount, currency]
@@ -847,7 +847,7 @@ components:
         metadata:
           type: object
           additionalProperties: true
-    
+
     DebitRequest:
       type: object
       required: [wallet_id, amount, currency]
@@ -869,7 +869,7 @@ components:
         metadata:
           type: object
           additionalProperties: true
-    
+
     TransferRequest:
       type: object
       required: [source_wallet_id, destination_wallet_id, amount, currency]
@@ -891,7 +891,7 @@ components:
         metadata:
           type: object
           additionalProperties: true
-    
+
     CreateHoldRequest:
       type: object
       required: [wallet_id, amount, currency]
@@ -951,7 +951,7 @@ components:
         updated_at:
           type: string
           format: date-time
-    
+
     WalletListResponse:
       type: object
       properties:
@@ -963,7 +963,7 @@ components:
           type: string
         total_count:
           type: integer
-    
+
     BalanceResponse:
       type: object
       properties:
@@ -991,7 +991,7 @@ components:
           type: string
           format: date-time
           description: Timestamp of balance calculation
-    
+
     TransactionResponse:
       type: object
       properties:
@@ -1034,7 +1034,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/LedgerEntryResponse'
-    
+
     TransactionListResponse:
       type: object
       properties:
@@ -1046,7 +1046,7 @@ components:
           type: string
         total_count:
           type: integer
-    
+
     HoldResponse:
       type: object
       properties:
@@ -1075,7 +1075,7 @@ components:
         resolved_at:
           type: string
           format: date-time
-    
+
     LedgerEntryResponse:
       type: object
       properties:
@@ -1105,7 +1105,7 @@ components:
         posted_at:
           type: string
           format: date-time
-    
+
     LedgerEntryListResponse:
       type: object
       properties:
@@ -1121,7 +1121,7 @@ components:
           type: string
         closing_balance:
           type: string
-    
+
     ReconciliationResponse:
       type: object
       properties:
@@ -1147,7 +1147,7 @@ components:
         completed_at:
           type: string
           format: date-time
-    
+
     HealthResponse:
       type: object
       properties:
@@ -1171,7 +1171,7 @@ components:
             queue:
               type: string
               enum: [ok, degraded, error]
-    
+
     ErrorResponse:
       type: object
       required: [error]
@@ -1215,7 +1215,7 @@ components:
               code: "INVALID_REQUEST"
               message: "Invalid request parameters"
               request_id: "550e8400-e29b-41d4-a716-446655440000"
-    
+
     NotFound:
       description: Resource not found
       content:
@@ -1227,7 +1227,7 @@ components:
               code: "NOT_FOUND"
               message: "Wallet not found"
               request_id: "550e8400-e29b-41d4-a716-446655440000"
-    
+
     Conflict:
       description: Conflict with existing resource or state
       content:
@@ -1239,7 +1239,7 @@ components:
               code: "CONFLICT"
               message: "Wallet is already frozen"
               request_id: "550e8400-e29b-41d4-a716-446655440000"
-    
+
     InsufficientFunds:
       description: Insufficient balance for operation
       content:
@@ -1254,7 +1254,7 @@ components:
                 - field: "amount"
                   message: "Required: 100.00, Available: 50.00"
               request_id: "550e8400-e29b-41d4-a716-446655440000"
-    
+
     ValidationError:
       description: Request validation failed
       content:

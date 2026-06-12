@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "ledgerx"
+version = "0.1.0"
+description = "Production-grade digital wallet & ledger backend"
+authors = ["Your Name <you@example.com>"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "C",  # flake8-comprehensions
+    "B",  # flake8-bugbear
+]
+ignore = ["B008", "E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+exclude = ["^alembic/"]
+
+[[tool.mypy.overrides]]
+module = [
+    "asyncpg.*",
+    "aiokafka.*",
+    "passlib.*",
+    "jose.*",
+    "factory.*",
+    "faker.*"
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = "test_*.py"

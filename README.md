@@ -130,7 +130,7 @@ LedgerX implements **double-entry bookkeeping** with **append-only ledger entrie
 # ❌ WRONG: Direct balance update (race condition prone)
 UPDATE wallets SET balance = balance - 100 WHERE id = 'user123';
 
-# ❌ WRONG: Read-modify-write (lost update prone)  
+# ❌ WRONG: Read-modify-write (lost update prone)
 balance = SELECT balance FROM wallets WHERE id = 'user123';
 UPDATE wallets SET balance = {balance - 100} WHERE id = 'user123';
 ```
@@ -159,7 +159,7 @@ Transfer $100 from Alice to Bob:
 ```
 ASSETS (Debit increases, Credit decreases)
 ├── USER_WALLET          # Individual user wallets
-├── MERCHANT_WALLET      # Business wallets  
+├── MERCHANT_WALLET      # Business wallets
 ├── FLOAT_ACCOUNT        # Platform operating funds
 └── SETTLEMENT_ACCOUNT   # Pending settlements
 
@@ -183,7 +183,7 @@ EXPENSES (Debit increases)
 
 ```sql
 -- Wallet balance is ALWAYS computed, never stored directly
-SELECT 
+SELECT
     wallet_id,
     SUM(CASE WHEN entry_type = 'CREDIT' THEN amount ELSE 0 END) -
     SUM(CASE WHEN entry_type = 'DEBIT' THEN amount ELSE 0 END) AS balance
@@ -534,10 +534,10 @@ This section provides detailed clarifications on critical design decisions for p
 BEGIN;
   -- Lock to prevent concurrent snapshots for same wallet
   SELECT pg_advisory_xact_lock(hashtext('snapshot:' || wallet_id::text));
-  
+
   -- Compute balance at specific entry point
   INSERT INTO balance_snapshots (wallet_id, snapshot_date, posted_balance, held_balance, last_entry_id, entry_count)
-  SELECT 
+  SELECT
     wallet_id,
     CURRENT_DATE,
     SUM(CASE WHEN entry_type = 'CREDIT' THEN amount ELSE -amount END),
@@ -625,7 +625,7 @@ ALTER TABLE transactions ADD CONSTRAINT fk_parent_transaction
     FOREIGN KEY (parent_transaction_id) REFERENCES transactions(id);
 
 -- Prevent double reversal
-CREATE UNIQUE INDEX idx_unique_reversal ON transactions(parent_transaction_id) 
+CREATE UNIQUE INDEX idx_unique_reversal ON transactions(parent_transaction_id)
     WHERE transaction_type IN ('REFUND', 'VOID', 'CHARGEBACK');
 
 -- Reversal must match original amount (for full reversals)
@@ -695,32 +695,32 @@ LedgerX uses the **Transactional Outbox Pattern** to ensure reliable event deliv
 ```sql
 CREATE TABLE outbox_events (
     id BIGSERIAL PRIMARY KEY,
-    
+
     -- Event identity
     event_id UUID NOT NULL DEFAULT uuid_generate_v4(),
     event_type VARCHAR(64) NOT NULL,           -- e.g., 'transaction.completed'
-    
+
     -- Routing
     aggregate_type VARCHAR(64) NOT NULL,       -- e.g., 'wallet', 'transaction'
     aggregate_id UUID NOT NULL,                -- e.g., wallet_id
-    
+
     -- Payload
     payload JSONB NOT NULL,
-    
+
     -- Publishing state
     published BOOLEAN NOT NULL DEFAULT FALSE,
     published_at TIMESTAMP WITH TIME ZONE,
     publish_attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
-    
+
     -- Ordering
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    
+
     -- Cleanup
     expires_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() + INTERVAL '7 days')
 );
 
-CREATE INDEX idx_outbox_unpublished ON outbox_events(created_at) 
+CREATE INDEX idx_outbox_unpublished ON outbox_events(created_at)
     WHERE published = FALSE;
 CREATE INDEX idx_outbox_aggregate ON outbox_events(aggregate_type, aggregate_id);
 ```
@@ -748,11 +748,11 @@ async def handle_transaction_completed(event: Event):
     if await event_store.is_processed(event.event_id):
         logger.info(f"Event {event.event_id} already processed, skipping")
         return
-    
+
     try:
         # Process event
         await process_webhook(event)
-        
+
         # Mark as processed
         await event_store.mark_processed(event.event_id)
     except Exception as e:

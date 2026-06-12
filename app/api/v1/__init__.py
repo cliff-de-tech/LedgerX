@@ -19,6 +19,7 @@ from app.domain.models import (
     DebitRequest,
     HoldCreate,
     HoldResponse,
+    HoldStatus,
     LedgerEntryResponse,
     TransactionResponse,
     TransactionStatus,
@@ -30,7 +31,6 @@ from app.domain.models import (
     WalletUpdate,
 )
 
-
 router = APIRouter()
 
 
@@ -38,8 +38,10 @@ router = APIRouter()
 # Request/Response Models
 # =============================================================================
 
+
 class PaginatedResponse(BaseModel):
     """Base paginated response."""
+
     items: list[Any]
     next_page_token: str | None = None
     total_count: int | None = None
@@ -47,16 +49,19 @@ class PaginatedResponse(BaseModel):
 
 class WalletListResponse(PaginatedResponse):
     """Paginated wallet list."""
+
     items: list[WalletResponse]
 
 
 class TransactionListResponse(PaginatedResponse):
     """Paginated transaction list."""
+
     items: list[TransactionResponse]
 
 
 class LedgerEntryListResponse(PaginatedResponse):
     """Paginated ledger entry list."""
+
     items: list[LedgerEntryResponse]
     opening_balance: str | None = None
     closing_balance: str | None = None
@@ -64,16 +69,19 @@ class LedgerEntryListResponse(PaginatedResponse):
 
 class FreezeWalletRequest(BaseModel):
     """Request to freeze a wallet."""
+
     reason: str = Field(..., max_length=255)
 
 
 class CaptureHoldRequest(BaseModel):
     """Request to capture a hold."""
+
     amount: Decimal | None = Field(None, gt=0)
 
 
 class ReconciliationResponse(BaseModel):
     """Reconciliation result."""
+
     status: str
     wallets_checked: int
     discrepancies: list[dict[str, Any]]
@@ -84,15 +92,16 @@ class ReconciliationResponse(BaseModel):
 # Dependency Injection
 # =============================================================================
 
+
 def get_idempotency_key(
-    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")]
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ) -> str:
     """Extract idempotency key from header."""
     return idempotency_key
 
 
 def get_optional_idempotency_key(
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> str | None:
     """Extract optional idempotency key from header."""
     return idempotency_key
@@ -101,6 +110,7 @@ def get_optional_idempotency_key(
 # =============================================================================
 # Wallet Endpoints
 # =============================================================================
+
 
 @router.post(
     "/wallets",
@@ -115,7 +125,7 @@ async def create_wallet(
 ):
     """
     Create a new wallet for a user.
-    
+
     Each user can have multiple wallets in different currencies.
     """
     # TODO: Implement with actual service
@@ -164,7 +174,7 @@ async def get_wallet(wallet_id: UUID):
     # TODO: Implement with actual service
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail={"error": {"code": "WALLET_NOT_FOUND", "message": "Wallet not found"}}
+        detail={"error": {"code": "WALLET_NOT_FOUND", "message": "Wallet not found"}},
     )
 
 
@@ -183,7 +193,7 @@ async def update_wallet(
     # TODO: Implement with actual service
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail={"error": {"code": "WALLET_NOT_FOUND", "message": "Wallet not found"}}
+        detail={"error": {"code": "WALLET_NOT_FOUND", "message": "Wallet not found"}},
     )
 
 
@@ -196,7 +206,7 @@ async def update_wallet(
 async def get_wallet_balance(wallet_id: UUID):
     """
     Retrieve the current balance breakdown for a wallet.
-    
+
     Balance types:
     - **posted_balance**: Settled, confirmed funds
     - **pending_credits**: Incoming funds not yet settled
@@ -232,7 +242,7 @@ async def freeze_wallet(
     # TODO: Implement with actual service
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail={"error": {"code": "WALLET_NOT_FOUND", "message": "Wallet not found"}}
+        detail={"error": {"code": "WALLET_NOT_FOUND", "message": "Wallet not found"}},
     )
 
 
@@ -250,13 +260,14 @@ async def unfreeze_wallet(
     # TODO: Implement with actual service
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail={"error": {"code": "WALLET_NOT_FOUND", "message": "Wallet not found"}}
+        detail={"error": {"code": "WALLET_NOT_FOUND", "message": "Wallet not found"}},
     )
 
 
 # =============================================================================
 # Transaction Endpoints
 # =============================================================================
+
 
 @router.post(
     "/transactions/credit",
@@ -271,7 +282,7 @@ async def credit_wallet(
 ):
     """
     Add funds to a wallet (top-up, refund, cashback).
-    
+
     Creates a single-sided ledger entry crediting the destination wallet.
     """
     # TODO: Implement with actual service
@@ -307,7 +318,7 @@ async def debit_wallet(
 ):
     """
     Remove funds from a wallet (payment, withdrawal).
-    
+
     Fails if available balance is insufficient.
     """
     # TODO: Implement with actual service
@@ -343,7 +354,7 @@ async def transfer(
 ):
     """
     Transfer funds from one wallet to another.
-    
+
     This is an atomic operation that creates two ledger entries:
     - DEBIT on source wallet
     - CREDIT on destination wallet
@@ -379,7 +390,12 @@ async def get_transaction(transaction_id: UUID):
     # TODO: Implement with actual service
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail={"error": {"code": "TRANSACTION_NOT_FOUND", "message": "Transaction not found"}}
+        detail={
+            "error": {
+                "code": "TRANSACTION_NOT_FOUND",
+                "message": "Transaction not found",
+            }
+        },
     )
 
 
@@ -407,6 +423,7 @@ async def list_transactions(
 # Hold Endpoints
 # =============================================================================
 
+
 @router.post(
     "/holds",
     response_model=HoldResponse,
@@ -420,20 +437,21 @@ async def create_hold(
 ):
     """
     Reserve funds for a pending transaction.
-    
+
     Held funds reduce the available balance but don't affect posted balance.
     """
     # TODO: Implement with actual service
     from datetime import timedelta
-    
+
     return HoldResponse(
         id=UUID("550e8400-e29b-41d4-a716-446655440004"),
         wallet_id=request.wallet_id,
         transaction_id=UUID("550e8400-e29b-41d4-a716-446655440005"),
         amount=request.amount,
         currency=request.currency,
-        status="ACTIVE",
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=request.expires_in_minutes),
+        status=HoldStatus.ACTIVE,
+        expires_at=datetime.now(timezone.utc)
+        + timedelta(minutes=request.expires_in_minutes),
         created_at=datetime.now(timezone.utc),
         resolved_at=None,
     )
@@ -450,7 +468,7 @@ async def get_hold(hold_id: UUID):
     # TODO: Implement with actual service
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail={"error": {"code": "HOLD_NOT_FOUND", "message": "Hold not found"}}
+        detail={"error": {"code": "HOLD_NOT_FOUND", "message": "Hold not found"}},
     )
 
 
@@ -467,13 +485,13 @@ async def capture_hold(
 ):
     """
     Convert a hold to an actual debit.
-    
+
     Can capture the full amount or a partial amount.
     """
     # TODO: Implement with actual service
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail={"error": {"code": "HOLD_NOT_FOUND", "message": "Hold not found"}}
+        detail={"error": {"code": "HOLD_NOT_FOUND", "message": "Hold not found"}},
     )
 
 
@@ -491,13 +509,14 @@ async def release_hold(
     # TODO: Implement with actual service
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail={"error": {"code": "HOLD_NOT_FOUND", "message": "Hold not found"}}
+        detail={"error": {"code": "HOLD_NOT_FOUND", "message": "Hold not found"}},
     )
 
 
 # =============================================================================
 # Ledger Endpoints
 # =============================================================================
+
 
 @router.get(
     "/ledger/entries",
@@ -534,7 +553,7 @@ async def reconcile(
 ):
     """
     Verify that cached balances match computed balances from ledger.
-    
+
     This is typically run as a scheduled job but can be triggered manually.
     """
     # TODO: Implement with actual service
